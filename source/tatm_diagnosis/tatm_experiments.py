@@ -220,6 +220,11 @@ if __name__ == "__main__":
     parser.add_argument("--device", choices=["cpu", "mps", "cuda"], default="cpu")
     parser.add_argument("--max-samples", type=int, default=3)
     parser.add_argument("--skip-f2f3", action="store_true", help="Only run F1 for lighter memory usage.")
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Enable trust_remote_code for HF model loading (off by default for better Colab compatibility).",
+    )
     args = parser.parse_args()
 
     print("Initializing TATM Diagnostic Framework...")
@@ -232,8 +237,27 @@ if __name__ == "__main__":
     device = args.device
     print(f"Loading model microsoft/Phi-3-mini-4k-instruct on {device}...")
     
-    # We use a relatively small model for local testing
-    model = HookedTransformer.from_pretrained(args.model, device=device, trust_remote_code=True)
+    # Prefer built-in transformers implementation in Colab to avoid Phi-3 remote-code rope_scaling mismatch.
+    trust_remote_code = args.trust_remote_code
+    try:
+        model = HookedTransformer.from_pretrained(
+            args.model,
+            device=device,
+            trust_remote_code=trust_remote_code,
+        )
+    except KeyError as e:
+        if "type" in str(e):
+            print(
+                "Detected Phi-3 rope_scaling compatibility issue. "
+                "Retrying with trust_remote_code=False."
+            )
+            model = HookedTransformer.from_pretrained(
+                args.model,
+                device=device,
+                trust_remote_code=False,
+            )
+        else:
+            raise
     model.eval()
     
     dataset_path = args.dataset
