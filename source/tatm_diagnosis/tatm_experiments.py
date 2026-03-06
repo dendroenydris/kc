@@ -224,11 +224,13 @@ def load_hooked_model_with_phi3_compat(model_name: str, device: str) -> HookedTr
             rope_scaling["type"] = "longrope"
         cfg.rope_scaling = rope_scaling
 
+    load_dtype = torch.float16 if device == "cuda" else torch.float32
     return HookedTransformer.from_pretrained(
         model_name,
         device=device,
         trust_remote_code=True,
-        hf_model_kwargs={"config": cfg},
+        config=cfg,
+        dtype=load_dtype,
     )
 
 # ============================================================================
