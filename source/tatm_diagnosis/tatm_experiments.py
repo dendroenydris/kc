@@ -217,6 +217,11 @@ def load_hooked_model_with_phi3_compat(model_name: str, device: str) -> HookedTr
     cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     rope_scaling = getattr(cfg, "rope_scaling", None)
     if isinstance(rope_scaling, dict):
+        if rope_scaling.get("type") == "default" or rope_scaling.get("rope_type") == "default":
+            cfg.rope_scaling = None
+            rope_scaling = None
+
+    if isinstance(rope_scaling, dict):
         if "type" not in rope_scaling and "rope_type" in rope_scaling:
             rope_scaling["type"] = rope_scaling["rope_type"]
         elif "type" not in rope_scaling and ("short_factor" in rope_scaling or "long_factor" in rope_scaling):
