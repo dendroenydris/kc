@@ -1,0 +1,8 @@
+.inbox/
+.cache_temporal_kc/
+.DS_Store
+*.log
+*.pyc
+*.bz2
+data/external/wiki/wikidata-latest-all.sample-20000.jsonl
+data/external/wiki/wikidata-aligned-to-enwiki8.sample.jsonl

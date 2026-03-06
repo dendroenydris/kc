@@ -1,0 +1,13 @@
+{
+  "enwiki_split_file": "enwiki-20260201-pages-meta-history2.xml-p151001p151573.bz2",
+  "enwiki_url": "https://dumps.wikimedia.org/enwiki/20260201/enwiki-20260201-pages-meta-history2.xml-p151001p151573.bz2",
+  "enwiki_size_bytes": 326832774,
+  "wikidata_sample_file": "wikidata-latest-all.sample-20000.jsonl",
+  "wikidata_sampling": {
+    "source_url": "https://dumps.wikimedia.org/wikidatawiki/entities/latest-all.json.bz2",
+    "bucket_mod": 20,
+    "bucket": 1,
+    "seen_items": 400164,
+    "kept_items": 20000
+  }
+}
