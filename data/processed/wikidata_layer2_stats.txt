@@ -1,0 +1,22 @@
+=== Wikidata Layer-2 Stats ===
+Input FactTimelines  : 8
+Skipped (no pair)    : 0
+Total EvalInstances  : 16
+Avg instances/tl     : 2.0
+
+── By layer ──────────────────────────────
+  B1: 8
+  B3: 8
+
+── By task_type ──────────────────────────
+  context_override: 16
+
+── By relation ───────────────────────────
+  head of government: 2
+  head of state: 2
+  chairperson: 2
+  officeholder: 2
+  chief executive officer: 2
+  director / manager: 2
+  member of sports team: 2
+  head coach: 2

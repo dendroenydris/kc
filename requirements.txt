@@ -3,3 +3,11 @@ tqdm>=4.66.0
 PyYAML>=6.0.1
 python-dateutil>=2.9.0.post0
 mwparserfromhell>=0.6.6
+
+# TATM experiments (Phase 2)
+torch>=2.1.0
+transformer_lens>=2.0.0
+transformers>=4.36.0
+scikit-learn>=1.3.0
+scipy>=1.11.0
+numpy>=1.24.0

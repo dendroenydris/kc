@@ -20,12 +20,25 @@ Dataset records include:
 Main script:
 
 - `source/tatm_diagnosis/tatm_experiments.py`
+- `source/tatm_diagnosis/run_diagnosis.py` (meeting-ready report + pie chart)
 
 Recommended low-memory run:
 
 ```bash
 conda activate ml
 python source/tatm_diagnosis/tatm_experiments.py --device cpu --max-samples 2 --skip-f2f3
+```
+
+Meeting-ready diagnosis run:
+
+```bash
+conda activate ml
+python source/tatm_diagnosis/run_diagnosis.py \
+  --model microsoft/Phi-3-mini-4k-instruct \
+  --dataset data/processed/temporal_sample_20.jsonl \
+  --device cpu \
+  --max-samples 20 \
+  --out-dir outputs/diagnosis
 ```
 
 ## Dataset Builder
