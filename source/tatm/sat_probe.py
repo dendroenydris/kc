@@ -103,6 +103,9 @@ def collect_features(
         token_ids_flat = tokens[0]
 
         bar.set_postfix_str("tokenising…", refresh=False)
+        # year_pos: only the target year (t_new) — these are the temporal
+        # constraint tokens we want the model to attend to.
+        # all_year_pos: every year in the passage, kept for diagnostics only.
         year_pos = find_year_positions(token_ids_flat, model.tokenizer, target_year=t_new)
         all_year_pos = find_year_positions(token_ids_flat, model.tokenizer)
 
@@ -116,9 +119,13 @@ def collect_features(
             torch.cuda.empty_cache()
         gc.collect()
 
-        # attention features (max over year positions via run_with_hooks)
+        # attention features: use ONLY t_new positions as the constraint source.
+        # Falling back to all_year_pos only when t_new is not found at all.
+        # (Using all years would dilute the signal; passages can contain
+        #  hundreds of year tokens unrelated to the temporal constraint.)
+        src_positions = year_pos if year_pos else all_year_pos
         bar.set_postfix_str("attn hook…", refresh=False)
-        attn_vec = extract_attention_to_positions(model, tokens, all_year_pos)
+        attn_vec = extract_attention_to_positions(model, tokens, src_positions)
         features = attn_vec.numpy().flatten()
         assert features.shape[0] == feat_dim
 
@@ -135,8 +142,9 @@ def collect_features(
             "answer_new": answer_new,
             "answer_old": inst.get("answer_old", ""),
             "success": success,
-            "n_year_tokens": len(all_year_pos),
             "n_target_year_tokens": len(year_pos),
+            "n_all_year_tokens": len(all_year_pos),
+            "used_fallback_years": len(year_pos) == 0,
         })
 
         n_ok = sum(y_list)

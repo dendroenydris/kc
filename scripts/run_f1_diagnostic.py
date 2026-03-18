@@ -128,6 +128,95 @@ def _load_raw(records: list[dict]) -> tuple[list[dict], list[dict]]:
     return b1_list, b3_list
 
 
+# ── A1: Parametric memory filter ─────────────────────────────────────────────
+
+def run_a1_filter(
+    model,
+    b1_instances: list[dict],
+    b3_instances: list[dict],
+    template: str,
+    out_dir: Path,
+) -> tuple[list[dict], list[dict]]:
+    """Run A1 (explicit year, no context) to keep only instances the model
+    cannot answer from parametric memory alone.
+
+    Filtering criterion
+    -------------------
+    A1_KNOWS_NEW  : A1 outputs answer_new  → exclude (year cue alone is enough)
+    A1_WRONG      : A1 outputs other       → keep (evidence is genuinely needed)
+    """
+    import gc
+
+    print("\n" + "=" * 60)
+    print("A1: Year-conditioned Parametric Memory Profiling")
+    print("=" * 60)
+    print("Prompt: question WITH year, WITHOUT context")
+    print("Keeping instances where model does NOT output answer_new")
+    print("(i.e., evidence passage is genuinely needed for B1 to succeed)\n")
+
+    knows_new_ids: set[str] = set()
+    a1_log = []
+
+    bar = tqdm(b1_instances, desc="A1  parametric", unit="inst", dynamic_ncols=True)
+    for inst in bar:
+        question   = inst.get("question", "")
+        answer_new = inst.get("answer_new", "")
+        iid        = inst.get("instance_id", "")
+
+        # A1: question with year cue intact, but NO context
+        prompt    = build_prompt("", question, template=template)
+        generated = generate_answer(model, prompt)
+        already_knows = check_match(generated, answer_new)
+
+        a1_log.append({
+            "instance_id": iid,
+            "question":    question,
+            "generated":   generated,
+            "answer_new":  answer_new,
+            "knows_new":   already_knows,
+        })
+
+        if already_knows:
+            knows_new_ids.add(iid)
+
+        bar.set_postfix(
+            knows_new=len(knows_new_ids),
+            kept=len(b1_instances) - len(knows_new_ids),
+            refresh=True,
+        )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    n_total   = len(b1_instances)
+    n_known   = len(knows_new_ids)
+    n_kept    = n_total - n_known
+    print(f"\n  A1_KNOWS_NEW (excluded): {n_known}/{n_total} ({100*n_known/n_total:.1f}%)")
+    print(f"  A1_WRONG     (kept):     {n_kept}/{n_total} ({100*n_kept/n_total:.1f}%)")
+
+    # save A1 log
+    with open(out_dir / "a1_parametric_memory.json", "w") as f:
+        json.dump({"n_total": n_total, "n_knows_new": n_known, "log": a1_log},
+                  f, indent=2, ensure_ascii=False)
+
+    # filter both B1 and B3 to matching subset
+    b1_filtered = [r for r in b1_instances if r.get("instance_id") not in knows_new_ids]
+
+    # B3 has different instance_id hashes; match via (fact_id, t_old, t_new)
+    excluded_keys = set()
+    for r in b1_instances:
+        if r.get("instance_id") in knows_new_ids:
+            excluded_keys.add((r.get("fact_id"), r.get("t_old"), r.get("t_new")))
+    b3_filtered = [
+        r for r in b3_instances
+        if (r.get("fact_id"), r.get("t_old"), r.get("t_new")) not in excluded_keys
+    ]
+
+    print(f"\n→ {len(b1_filtered)} B1 + {len(b3_filtered)} B3 instances kept for F1 diagnosis")
+    return b1_filtered, b3_filtered
+
+
 # ── F1-a: SAT Probe ─────────────────────────────────────────────────────────
 
 def run_f1a(model, b1_instances, template, out_dir):
@@ -189,6 +278,8 @@ def run_f1b(model, b1_instances, b3_instances, y_labels, top_heads, template, ou
 
     groups = {"b1_success": [], "b1_failure": [], "b3": []}
 
+    import gc as _gc
+
     for idx, inst in enumerate(tqdm(b1_instances, desc="F1-b  B1 attn", unit="inst", dynamic_ncols=True)):
         context = inst.get("evidence_new", inst.get("context", ""))
         question = inst.get("question", "")
@@ -196,13 +287,18 @@ def run_f1b(model, b1_instances, b3_instances, y_labels, top_heads, template, ou
 
         prompt = build_prompt(context, question, template=template)
         tokens = model.to_tokens(prompt, prepend_bos=False)
-        all_year_pos = find_year_positions(tokens[0], model.tokenizer)
+        year_pos = find_year_positions(tokens[0], model.tokenizer, target_year=t_new)
+        if not year_pos:
+            year_pos = find_year_positions(tokens[0], model.tokenizer)
 
-        attn = extract_attention_to_positions(model, tokens, all_year_pos)
+        attn = extract_attention_to_positions(model, tokens, year_pos)
 
         label = y_labels[idx] if idx < len(y_labels) else 0
         key = "b1_success" if label == 1 else "b1_failure"
         groups[key].append(attn.numpy())
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     for inst in tqdm(b3_instances, desc="F1-b  B3 attn", unit="inst", dynamic_ncols=True):
         context = inst.get("evidence_new", inst.get("context", ""))
@@ -211,9 +307,14 @@ def run_f1b(model, b1_instances, b3_instances, y_labels, top_heads, template, ou
 
         prompt = build_prompt(context, question, template=template)
         tokens = model.to_tokens(prompt, prepend_bos=False)
-        all_year_pos = find_year_positions(tokens[0], model.tokenizer)
-        attn = extract_attention_to_positions(model, tokens, all_year_pos)
+        year_pos = find_year_positions(tokens[0], model.tokenizer, target_year=t_new)
+        if not year_pos:
+            year_pos = find_year_positions(tokens[0], model.tokenizer)
+        attn = extract_attention_to_positions(model, tokens, year_pos)
         groups["b3"].append(attn.numpy())
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # aggregate per group
     results = {}
@@ -306,7 +407,9 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
 
         prompt = build_prompt(context, question, template=template)
         tokens = model.to_tokens(prompt, prepend_bos=False)
-        year_pos = find_year_positions(tokens[0], model.tokenizer)
+        year_pos = find_year_positions(tokens[0], model.tokenizer, target_year=t_new)
+        if not year_pos:
+            year_pos = find_year_positions(tokens[0], model.tokenizer)
 
         if not year_pos:
             ko_bar.set_postfix_str("skip (no year toks)", refresh=True)
@@ -359,6 +462,9 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
             refresh=True,
         )
 
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     if ko_results:
         drops = [r["p_new_drop_relative"] for r in ko_results if "p_new_drop_relative" in r]
         if drops:
@@ -402,6 +508,15 @@ def main():
         "--skip", nargs="*", default=[], choices=["f1a", "f1b", "f1c"],
         help="Skip specific sub-experiments",
     )
+    parser.add_argument(
+        "--no-a1-filter", action="store_true",
+        help=(
+            "Skip the A1 parametric memory profiling step (NOT recommended). "
+            "By default the script runs A1 (year cue, no context) first and "
+            "excludes instances where the model already knows answer_new with "
+            "just the year cue.  Use this flag only for debugging."
+        ),
+    )
     args = parser.parse_args()
 
     dtype_map = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
@@ -439,6 +554,15 @@ def main():
         pbar.update(1)
     print(f"  {model.cfg.n_layers} layers × {model.cfg.n_heads} heads  "
           f"d_model={model.cfg.d_model}")
+
+    # A1 filter: exclude instances where year cue alone is enough (default ON)
+    if not args.no_a1_filter:
+        b1_instances, b3_instances = run_a1_filter(
+            model, b1_instances, b3_instances, args.template, out_dir,
+        )
+        if not b1_instances:
+            print("\nNo instances remain after A1 filter. Exiting.")
+            return
 
     # F1-a
     probe_result, X, y, meta = None, None, None, None
