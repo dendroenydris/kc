@@ -1,24 +1,15 @@
 === Wikidata Layer-1 Stats ===
-Properties   : 17
-FactTimelines: 8
-Change events: 33
+Properties   : 8
+FactTimelines: 35
+Change events: 91
 Year range   : 2010–2023
 Evidence     : Wikipedia revisions
 
-  head of government                  (P6)  raw=  20  selected=  1
-  head of state                       (P35)  raw=  81  selected=  1
-  chairperson                         (P488)  raw=  21  selected=  1
-  position held                       (P39)  raw=   0  selected=  0
-  member of political party           (P102)  raw=   0  selected=  0
-  officeholder                        (P1308)  raw=  47  selected=  1
-  member of organisation              (P463)  raw=   0  selected=  0
-  chief executive officer             (P169)  raw=  39  selected=  1
-  employer                            (P108)  raw=   0  selected=  0
-  director / manager                  (P1037)  raw=  12  selected=  1
-  owned by                            (P127)  raw=   0  selected=  0
-  parent organisation                 (P749)  raw=   0  selected=  0
-  record label                        (P264)  raw=   0  selected=  0
-  educated at                         (P69)  raw=   0  selected=  0
-  member of sports team               (P54)  raw=   4  selected=  1
-  head coach                          (P286)  raw=  38  selected=  1
-  position played                     (P413)  raw=   0  selected=  0
+  head of government                  (P6)  raw=  13  selected=  5
+  head of state                       (P35)  raw=  44  selected=  5
+  chairperson                         (P488)  raw=  11  selected=  5
+  officeholder                        (P1308)  raw=  28  selected=  5
+  chief executive officer             (P169)  raw=  24  selected=  5
+  director / manager                  (P1037)  raw=   6  selected=  5
+  member of sports team               (P54)  raw=   0  selected=  0
+  head coach                          (P286)  raw=  25  selected=  5

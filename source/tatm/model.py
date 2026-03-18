@@ -118,8 +118,10 @@ def find_year_positions(
 ) -> list[int]:
     """Find token positions that encode 4-digit years.
 
-    Handles the common case where a year is a single token, and the
-    multi-token case (e.g. "20" + "17") as a best-effort fallback.
+    Works across tokenizer families:
+    - SentencePiece (▁ prefix, used by Phi-3 / LLaMA-2)
+    - BPE with Ġ prefix (GPT-2 / RoBERTa style)
+    - Plain decode (LLaMA-3 tiktoken style)
 
     Parameters
     ----------
@@ -132,20 +134,44 @@ def find_year_positions(
     Sorted list of 0-indexed token positions.
     """
     ids = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else token_ids
-    decoded = [tokenizer.decode([tid]) for tid in ids]
     positions: set[int] = set()
 
-    for i, tok_str in enumerate(decoded):
-        stripped = tok_str.strip()
-        if YEAR_PAT.fullmatch(stripped):
-            if target_year is None or int(stripped) == target_year:
-                positions.add(i)
+    # ── Primary: raw subword strings, strip word-start markers ────────────────
+    # convert_ids_to_tokens returns e.g. "▁2021" or "Ġ2021"; decode() does
+    # post-processing that can obscure the bare digits for some tokenizers.
+    try:
+        raw_tokens = tokenizer.convert_ids_to_tokens(ids)
+    except Exception:
+        raw_tokens = None
 
-    # multi-token fallback: check consecutive pairs
+    if raw_tokens:
+        for i, raw in enumerate(raw_tokens):
+            if not raw:
+                continue
+            # strip SentencePiece (▁ U+2581) and GPT-2 BPE (Ġ U+0120) prefixes
+            clean = raw.lstrip("\u2581\u0120").strip()
+            if YEAR_PAT.fullmatch(clean):
+                if target_year is None or int(clean) == target_year:
+                    positions.add(i)
+
+    # ── Fallback: decode each token individually ───────────────────────────────
+    decoded = [tokenizer.decode([tid]) for tid in ids]
+
+    if not positions:
+        for i, tok_str in enumerate(decoded):
+            clean = tok_str.strip()
+            if YEAR_PAT.fullmatch(clean):
+                if target_year is None or int(clean) == target_year:
+                    positions.add(i)
+
+    # ── Multi-token fallback: years split across two adjacent tokens ───────────
+    # e.g.  "▁20" + "21"  →  "2021"
     for i in range(len(decoded) - 1):
+        if i in positions or (i + 1) in positions:
+            continue
         combined = (decoded[i] + decoded[i + 1]).strip()
         m = YEAR_PAT.search(combined)
-        if m and i not in positions and (i + 1) not in positions:
+        if m:
             year_val = int(m.group())
             if target_year is None or year_val == target_year:
                 positions.update([i, i + 1])
@@ -156,10 +182,20 @@ def find_year_positions(
 # ── Answer matching ──────────────────────────────────────────────────────────
 
 def check_match(generated: str, expected: str) -> bool:
-    """Case-insensitive substring check for answer matching."""
+    """Case-insensitive answer matching with two-tier logic.
+
+    Tier 1 (strict): expected is a substring of generated.
+    Tier 2 (loose) : the first token of expected (usually the first name or
+                     a key entity word) appears in generated.  Handles title
+                     variants like "Baron McFall" vs "Lord McFall".
+    """
     gen_lower = generated.lower().strip()
     exp_lower = expected.lower().strip()
-    return exp_lower in gen_lower
+    if exp_lower in gen_lower:
+        return True
+    # loose: first whitespace-delimited word that is ≥4 chars (skip short titles)
+    first_word = next((w for w in exp_lower.split() if len(w) >= 4), "")
+    return bool(first_word and first_word in gen_lower)
 
 
 def generate_answer(
