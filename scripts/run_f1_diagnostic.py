@@ -239,19 +239,27 @@ def run_f1a(model, b1_instances, template, out_dir):
     top_heads = analyse_weights(
         probe_result, model.cfg.n_layers, model.cfg.n_heads, top_k=10,
     )
-    print("\nTop-10 (layer, head) by |coefficient|:")
+    n_nonzero = sum(1 for _, _, c in top_heads if c != 0.0)
+    print(f"\nTop-10 (layer, head) by |coefficient|  [{n_nonzero} non-zero]:")
     for layer, head, coef in top_heads:
-        direction = "↑ success" if coef > 0 else "↓ success"
-        print(f"  L{layer:2d}.H{head:2d}  coef={coef:+.4f}  ({direction})")
+        direction = "↑ success" if coef > 0 else ("↓ success" if coef < 0 else "zero")
+        print(f"  L{layer:2d}.H{head:2d}  coef={coef:+.4e}  ({direction})")
 
-    # save
+    if n_nonzero == 0:
+        print("\n  WARNING: all coefficients are zero.")
+        print("  Possible causes:")
+        print("    - Too few samples (need ≥ 20 of each class for C=1.0)")
+        print("    - All attention features nearly identical across instances")
+
+    # save — use scientific notation strings for coef so tiny values are visible
     probe_out = {
         "auroc": probe_result.auroc,
         "auroc_std": probe_result.auroc_std,
         "n_samples": probe_result.n_samples,
         "n_positive": probe_result.n_positive,
+        "n_negative": probe_result.n_samples - probe_result.n_positive,
         "top_heads": [
-            {"layer": l, "head": h, "coef": c} for l, h, c in top_heads
+            {"layer": l, "head": h, "coef": f"{c:.4e}"} for l, h, c in top_heads
         ],
         "instance_meta": meta,
     }

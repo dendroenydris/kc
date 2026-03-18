@@ -28,6 +28,8 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from transformer_lens import HookedTransformer
 
@@ -164,7 +166,7 @@ def train_probe(
     X: np.ndarray,
     y: np.ndarray,
     *,
-    C: float = 0.05,
+    C: float = 1.0,
     n_folds: int = 5,
 ) -> ProbeResult:
     """Train L1-regularised logistic regression with stratified CV.
@@ -173,7 +175,13 @@ def train_probe(
     ----------
     X : [N, L*H]
     y : [N] binary labels
-    C : inverse regularisation strength (lower = more L1 sparsity)
+    C : inverse regularisation strength.  Default 1.0.
+        The original SAT Probe paper (Yuksekgonul et al.) used C=0.05 on
+        datasets with hundreds of instances.  With small datasets (~30-100
+        samples) the gradient signal per feature is ~0.25, so the L1
+        threshold 1/C must be < 0.25 for any coefficient to survive, i.e.
+        C > 4.  C=1.0 is a practical default: sparse enough to highlight
+        only the most predictive heads, weak enough to avoid total collapse.
     n_folds : number of CV folds
 
     Returns
@@ -195,31 +203,49 @@ def train_probe(
             n_samples=len(y), n_positive=n_pos,
         )
 
+    # Attention weights are tiny (typically 0.001–0.05 for a single token
+    # in a ~100-token sequence).  Without scaling, L1 with C=0.05 shrinks
+    # every coefficient to exactly 0 because the penalty term dominates.
+    # StandardScaler (fit on train fold only, transform both) brings all
+    # features to mean=0 / std=1, making the regularisation meaningful.
+    def _make_pipe() -> Pipeline:
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(
+                penalty="l1", C=C, solver="saga",
+                max_iter=2000, random_state=42,
+            )),
+        ])
+
     actual_folds = min(n_folds, min_class)
     skf = StratifiedKFold(n_splits=actual_folds, shuffle=True, random_state=42)
     aurocs: list[float] = []
 
     for train_idx, val_idx in skf.split(X, y):
-        clf = LogisticRegression(
-            penalty="l1", C=C, solver="saga", max_iter=2000, random_state=42,
-        )
-        clf.fit(X[train_idx], y[train_idx])
-        probs = clf.predict_proba(X[val_idx])[:, 1]
+        pipe = _make_pipe()
+        pipe.fit(X[train_idx], y[train_idx])
+        probs = pipe.predict_proba(X[val_idx])[:, 1]
         try:
             aurocs.append(roc_auc_score(y[val_idx], probs))
         except ValueError:
             pass
 
     # refit on full data for coefficient analysis
-    clf_full = LogisticRegression(
-        penalty="l1", C=C, solver="saga", max_iter=2000, random_state=42,
-    )
-    clf_full.fit(X, y)
+    pipe_full = _make_pipe()
+    pipe_full.fit(X, y)
+    coef_scaled = pipe_full.named_steps["clf"].coef_[0]
+
+    # Convert scaled coefficients back to original-space units so that
+    # the magnitude reflects actual attention-weight contribution.
+    scaler: StandardScaler = pipe_full.named_steps["scaler"]
+    std = scaler.scale_
+    std_safe = np.where(std > 0, std, 1.0)
+    coef_original = coef_scaled / std_safe
 
     return ProbeResult(
         auroc=float(np.mean(aurocs)) if aurocs else 0.5,
         auroc_std=float(np.std(aurocs)) if aurocs else 0.0,
-        coef=clf_full.coef_[0],
+        coef=coef_original,
         n_samples=len(y),
         n_positive=n_pos,
     )
