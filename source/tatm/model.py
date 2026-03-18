@@ -101,12 +101,23 @@ def _patch_phi3_rope_scaling(model_name: str) -> None:
 
 # ── Model loading ────────────────────────────────────────────────────────────
 
-#  Models that require trust_remote_code=True
-_TRUST_REMOTE_CODE_PATTERNS = ("phi-3", "phi3", "falcon", "starcoder")
+# Models natively supported by TransformerLens — do NOT pass trust_remote_code.
+# TL has its own weight mapping for these; trust_remote_code makes HF use the
+# downloaded custom code which produces a different state-dict structure and
+# causes wrong weight mapping (garbage outputs).
+_TL_NATIVE_PATTERNS = (
+    "phi-1", "phi-2", "phi-3", "phi-4",   # all in TL's OFFICIAL_MODEL_NAMES
+    "llama", "mistral", "gemma", "qwen",
+)
+
+# Models NOT in TL's official list that still need trust_remote_code
+_TRUST_REMOTE_CODE_PATTERNS = ("falcon", "starcoder")
 
 
 def _needs_trust_remote_code(model_name: str) -> bool:
     name_lower = model_name.lower()
+    if any(p in name_lower for p in _TL_NATIVE_PATTERNS):
+        return False   # TL-native: never use custom remote code
     return any(p in name_lower for p in _TRUST_REMOTE_CODE_PATTERNS)
 
 
@@ -135,14 +146,19 @@ def load_model(
 
     print(f"  → device={device}, dtype={dtype}")
 
-    # Model-specific pre-loading fixes
-    name_lower = model_name.lower()
-    if "phi-3" in name_lower or "phi3" in name_lower:
-        _patch_phi3_rope_scaling(model_name)
-
-    extra_kwargs = {}
+    extra_kwargs: dict = {}
     if _needs_trust_remote_code(model_name):
         extra_kwargs["trust_remote_code"] = True
+
+    # Disable TL weight post-processing for reduced-precision dtypes.
+    # TL's default fold_ln / center_writing_weights can be numerically
+    # unstable in float16 and produce garbage outputs (TL's own warning).
+    if dtype == torch.float16:
+        extra_kwargs.update(
+            fold_ln=False,
+            center_writing_weights=False,
+            center_unembed=False,
+        )
 
     model = HookedTransformer.from_pretrained(
         model_name,

@@ -77,15 +77,12 @@ def main() -> None:
 
     # ── 3. Prompt encoding ────────────────────────────────────────────────────
     section("3. Prompt encoding")
+    # Plain format works for phi-2 and most base/instruct models
     PROMPT = (
-        "<|system|>\n"
-        "Answer the question based on the provided context. "
-        "Give a short, direct answer.<|end|>\n"
-        "<|user|>\n"
         "Context: Joe Biden became the 46th President of the United States "
         "on January 20, 2021, succeeding Donald Trump.\n\n"
-        "Question: As of 2021, who is the President of the United States?<|end|>\n"
-        "<|assistant|>\n"
+        "Question: As of 2021, who is the President of the United States?\n"
+        "Answer:"
     )
     print("  Raw prompt:")
     print(PROMPT)
