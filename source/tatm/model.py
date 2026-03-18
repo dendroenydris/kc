@@ -13,32 +13,56 @@ YEAR_PAT = re.compile(r"\b(19|20)\d{2}\b")
 
 # ── Phi-3 compatibility patch ────────────────────────────────────────────────
 
-def _patch_phi3_rope_scaling() -> None:
-    """Fix two bugs in cached Phi-3 modeling files (old cached version).
+def _patch_phi3_rope_scaling(model_name: str) -> None:
+    """Pre-download and patch Phi-3 modeling file before TransformerLens imports it.
 
-    Bug 1 – KeyError 'type':
-        Old code: rope_scaling["type"]
-        New config uses "rope_type" → we try both keys.
+    Timing fix: we call get_cached_module_file() to pull modeling_phi3.py to
+    disk FIRST, then patch it, then clear sys.modules so the next import picks
+    up the patched version.  Without this step the file is absent when we look
+    for it and TL downloads+imports the unpatched version on its own.
 
-    Bug 2 – ValueError 'Unknown RoPE scaling type longrope/su/…':
-        Old code only handles "linear" / "dynamic".
-        For any unknown type (longrope, su, …) we fall back to standard
-        Phi3RotaryEmbedding.  We use a regex to capture the *actual*
-        indentation of the raise line so the replacement is always
-        syntactically valid regardless of how many spaces the file uses.
+    Two bugs fixed in the cached file:
+      Bug 1 – KeyError 'type': old code uses rope_scaling["type"] but newer
+              configs store the key as "rope_type".
+      Bug 2 – ValueError for 'longrope'/'su': old code only handles "linear"
+              and "dynamic".  We fall back to standard Phi3RotaryEmbedding
+              (correct for the 4K context window, harmless for MI experiments).
+              A regex captures the exact indentation of the raise line so the
+              replacement is always syntactically valid.
     """
     import importlib
+    import sys
 
-    cache = Path.home() / ".cache" / "huggingface" / "modules" / "transformers_modules"
-    found = list(cache.glob("**/modeling_phi3.py"))
-    if not found:
-        return  # not cached yet — fresh download will have correct code
+    cache_root = (
+        Path.home() / ".cache" / "huggingface" / "modules" / "transformers_modules"
+    )
 
-    for p in found:
+    # ── Step 1: ensure the file is on disk ────────────────────────────────
+    targets = list(cache_root.glob("**/modeling_phi3.py"))
+    if not targets:
+        try:
+            from transformers.dynamic_module_utils import get_cached_module_file
+            local = get_cached_module_file(
+                model_name,
+                "modeling_phi3.py",
+                trust_remote_code=True,
+            )
+            targets = [Path(local)]
+        except Exception as exc:
+            print(f"  [patch] Warning: could not pre-download modeling_phi3.py: {exc}")
+            return
+
+    # ── Step 2: apply fixes to every copy found ───────────────────────────
+    raise_pat = re.compile(
+        r'^( *)raise ValueError\(f"Unknown RoPE scaling type \{scaling_type\}"\)',
+        re.MULTILINE,
+    )
+
+    for p in targets:
         text = p.read_text(encoding="utf-8")
         changed = False
 
-        # ── Fix 1: key name lookup ─────────────────────────────────────────
+        # Fix 1: key name lookup
         old1 = 'scaling_type = self.config.rope_scaling["type"]'
         new1 = (
             'scaling_type = (self.config.rope_scaling.get("type") or '
@@ -48,18 +72,11 @@ def _patch_phi3_rope_scaling() -> None:
             text = text.replace(old1, new1)
             changed = True
 
-        # ── Fix 2: unknown type → fall back to standard RoPE ─────────────
-        # Use a regex so we capture the exact leading whitespace of the
-        # raise line and mirror it in the replacement body (avoids hardcoding
-        # 12 vs 16 vs any other indentation level).
-        raise_pat = re.compile(
-            r'^( *)raise ValueError\(f"Unknown RoPE scaling type \{scaling_type\}"\)',
-            re.MULTILINE,
-        )
+        # Fix 2: unknown type → standard RoPE (regex preserves actual indentation)
         if raise_pat.search(text):
-            def _replace_raise(m: re.Match) -> str:
-                ind = m.group(1)           # exact indentation of the raise line
-                sub = ind + "    "         # one extra level for arguments
+            def _repl(m: re.Match) -> str:
+                ind = m.group(1)      # exact whitespace of the raise line
+                sub = ind + "    "    # one extra indent level for arguments
                 return (
                     f"{ind}# patched: fall back to standard RoPE for unknown types\n"
                     f"{ind}self.rotary_emb = Phi3RotaryEmbedding(\n"
@@ -68,14 +85,17 @@ def _patch_phi3_rope_scaling() -> None:
                     f"{sub}base=self.rope_theta,\n"
                     f"{ind})"
                 )
-            text = raise_pat.sub(_replace_raise, text)
+            text = raise_pat.sub(_repl, text)
             changed = True
 
         if changed:
             p.write_text(text, encoding="utf-8")
-            print(f"  [patch] modeling_phi3.py → {p.parent.name[:40]}…")
+            print(f"  [patch] {p.name} in …/{p.parent.name[:40]}")
 
-    # invalidate importlib cache so the patched file is re-read
+    # ── Step 3: clear any already-imported version from memory ───────────
+    for key in list(sys.modules.keys()):
+        if "modeling_phi3" in key:
+            del sys.modules[key]
     importlib.invalidate_caches()
 
 
@@ -118,7 +138,7 @@ def load_model(
     # Model-specific pre-loading fixes
     name_lower = model_name.lower()
     if "phi-3" in name_lower or "phi3" in name_lower:
-        _patch_phi3_rope_scaling()
+        _patch_phi3_rope_scaling(model_name)
 
     extra_kwargs = {}
     if _needs_trust_remote_code(model_name):
