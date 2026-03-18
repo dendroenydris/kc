@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -9,7 +10,45 @@ from transformer_lens import HookedTransformer
 
 YEAR_PAT = re.compile(r"\b(19|20)\d{2}\b")
 
+
+# ── Phi-3 compatibility patch ────────────────────────────────────────────────
+
+def _patch_phi3_rope_scaling() -> None:
+    """Fix rope_scaling key mismatch in cached Phi-3 modeling files.
+
+    Newer Phi-3 configs use `rope_scaling["rope_type"]` but older cached
+    copies of modeling_phi3.py still access `rope_scaling["type"]`, causing
+    a KeyError.  This patches any cached copy we find before loading.
+    """
+    cache = Path.home() / ".cache" / "huggingface" / "modules" / "transformers_modules"
+    old = 'scaling_type = self.config.rope_scaling["type"]'
+    new = (
+        'scaling_type = (self.config.rope_scaling.get("type") '
+        'or self.config.rope_scaling.get("rope_type") '
+        'or "longrope")'
+    )
+    patched = False
+    for p in cache.glob("**/modeling_phi3.py"):
+        text = p.read_text(encoding="utf-8")
+        if old in text:
+            p.write_text(text.replace(old, new), encoding="utf-8")
+            print(f"  [patch] fixed rope_scaling key in {p.parent.name[:32]}…")
+            patched = True
+    if not patched and cache.exists():
+        # file not cached yet — nothing to patch; new download will be correct
+        pass
+
+
 # ── Model loading ────────────────────────────────────────────────────────────
+
+#  Models that require trust_remote_code=True
+_TRUST_REMOTE_CODE_PATTERNS = ("phi-3", "phi3", "falcon", "starcoder")
+
+
+def _needs_trust_remote_code(model_name: str) -> bool:
+    name_lower = model_name.lower()
+    return any(p in name_lower for p in _TRUST_REMOTE_CODE_PATTERNS)
+
 
 def load_model(
     model_name: str,
@@ -20,6 +59,7 @@ def load_model(
 
     device="auto" selects CUDA → MPS → CPU in order of availability.
     dtype defaults to float32 for MPS/CPU (float16 is unstable on MPS).
+    Handles Phi-3 rope_scaling compatibility automatically.
     """
     if device == "auto":
         if torch.cuda.is_available():
@@ -34,10 +74,21 @@ def load_model(
         dtype = torch.float32
 
     print(f"  → device={device}, dtype={dtype}")
+
+    # Model-specific pre-loading fixes
+    name_lower = model_name.lower()
+    if "phi-3" in name_lower or "phi3" in name_lower:
+        _patch_phi3_rope_scaling()
+
+    extra_kwargs = {}
+    if _needs_trust_remote_code(model_name):
+        extra_kwargs["trust_remote_code"] = True
+
     model = HookedTransformer.from_pretrained(
         model_name,
         device=device,
         dtype=dtype,
+        **extra_kwargs,
     )
     model.eval()
     return model
