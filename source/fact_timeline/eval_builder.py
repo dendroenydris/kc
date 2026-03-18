@@ -395,6 +395,18 @@ def build_eval_instances(tl: FactTimeline) -> list[EvalInstance]:
     ctx_b_strong = ev_new
     ctx_b_weak   = _strip_years(ev_new)
 
+    # B5 multi-span: both evidence_old (at t_old) and evidence_new (at t_new)
+    # are shown together.  The model must read the year to select the correct
+    # answer, since both answer_old and answer_new appear in the context.
+    # If evidence_old is merely synthetic, prefix it with the canonical form.
+    ev_old_anchor = ev_old if ev_old else (
+        f"As of {t_old}, {subj}'s {rel} was {answer_old}."
+    )
+    ev_new_anchor = ev_new if ev_new else (
+        f"As of {t_new}, {subj}'s {rel} was {answer_new}."
+    )
+    ctx_b_multi = f"{ev_old_anchor}\n{ev_new_anchor}"
+
     q_explicit = _q_explicit(subj, t_new, lang, rel)
     q_implicit = _q_implicit(subj, lang, rel)
     q_yn_ok    = _q_yn_correct(subj, answer_new, t_new, lang)
@@ -416,6 +428,10 @@ def build_eval_instances(tl: FactTimeline) -> list[EvalInstance]:
         _inst("B2", q_implicit, ctx_b_strong, "strong", True,  f"As of {t_new}", "context_override", "use_context"),
         _inst("B3", q_explicit, ctx_b_weak,   "weak",   False, "recently",       "context_override", "use_context"),
         _inst("B4", q_plain,    ctx_b_weak,   "weak",   False, "",               "context_override", "use_context"),
+        # B5: multi-span context — both t_old and t_new evidence shown.
+        # Model must use the year to select answer_new over answer_old.
+        # This is the correct testbed for F1 (temporal attention) diagnosis.
+        _inst("B5", q_explicit, ctx_b_multi,  "multi",  True,  f"As of {t_new}", "context_override", "use_context"),
 
         # ── C: Mechanistic Probes ────────────────────────────────────────────
         _inst("C1", q_explicit, ctx_adv,  "strong", True,  f"As of {t_new}", "ablation", "use_memory"),

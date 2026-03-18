@@ -14,6 +14,8 @@ Instance types
   B2  real Wikipedia context + implicit question
   B3  year-stripped context + explicit question year
   B4  year-stripped context + no time cue
+  B5  multi-span context (evidence_old + evidence_new) + explicit question year
+      → model must read year to select answer_new over answer_old
   C1  adversarial context (old answer labelled current)
   C2  mislabelled-year context
   C3  plain no-cue, no context (pure baseline)
@@ -46,7 +48,7 @@ DEFAULT_LAYER1 = REPO_ROOT / "data/processed/wikidata_layer1.jsonl"
 DEFAULT_OUT    = REPO_ROOT / "data/processed/wikidata_layer2.jsonl"
 
 
-ALL_LAYERS = ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3"]
+ALL_LAYERS = ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "C1", "C2", "C3"]
 
 
 def main() -> None:
@@ -58,7 +60,7 @@ def main() -> None:
     parser.add_argument(
         "--layers", nargs="+", default=["A1"], metavar="TYPE",
         help=(
-            "Instance types to emit, e.g. A1 B1 B2, or 'all' for all 11 types. "
+            "Instance types to emit, e.g. A1 B1 B2 B5, or 'all' for all types. "
             "(default: A1)"
         ),
     )

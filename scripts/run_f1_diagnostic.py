@@ -59,9 +59,15 @@ def _is_layer2(record: dict) -> bool:
     return "instance_id" in record and "task_type" in record
 
 
-def load_instances(path: str) -> tuple[list[dict], list[dict]]:
-    """Load B1 and B3 instance pairs from a JSONL file.
+def load_instances(
+    path: str,
+    use_b5: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """Load B1/B5 and B3 instance pairs from a JSONL file.
 
+    Args:
+        path:    JSONL file path.
+        use_b5:  If True, load B5 (multi-span context) instead of B1.
     Returns (b1_instances, b3_instances).
     For layer-2 format, filters by task_type.
     For raw format, constructs B1/B3 pairs from each record.
@@ -77,16 +83,28 @@ def load_instances(path: str) -> tuple[list[dict], list[dict]]:
         raise ValueError(f"No records found in {path}")
 
     if _is_layer2(records[0]):
-        return _load_layer2(records)
+        return _load_layer2(records, use_b5=use_b5)
     return _load_raw(records)
 
 
-def _load_layer2(records: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Layer-2 EvalInstance format: separate B1 and B3 by instance_id prefix."""
-    b1 = [r for r in records if r["instance_id"].startswith("B1")]
+def _load_layer2(
+    records: list[dict],
+    use_b5: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """Layer-2 EvalInstance format: separate B1/B5 and B3 by instance_id prefix.
+
+    Args:
+        use_b5: If True, load B5 (multi-span context) instead of B1 (single
+                evidence_new) as the strong-context group.  B5 shows both
+                evidence_old and evidence_new, forcing the model to read the
+                year in order to select the correct answer.  This is the
+                recommended context for the F1 (temporal attention) diagnostic.
+    """
+    prefix = "B5" if use_b5 else "B1"
+    b1 = [r for r in records if r["instance_id"].startswith(prefix)]
     b3 = [r for r in records if r["instance_id"].startswith("B3")]
 
-    # align B3 to B1 by fact_id + t_old + t_new
+    # align B3 to B1/B5 by fact_id + t_old + t_new
     b3_map = {(r["fact_id"], r["t_old"], r["t_new"]): r for r in b3}
     b3_aligned = [
         b3_map.get((r["fact_id"], r["t_old"], r["t_new"]))
@@ -233,7 +251,7 @@ def run_f1a(model, b1_instances, template, out_dir):
     print(f"\nOverride success: {n_pos}/{len(y)} ({100*n_pos/len(y):.1f}%)")
     print(f"Override failure: {n_neg}/{len(y)} ({100*n_neg/len(y):.1f}%)")
 
-    probe_result = train_probe(X, y, C=0.05)
+    probe_result = train_probe(X, y)
     print(f"\nSAT Probe AUROC: {probe_result.auroc:.3f} ± {probe_result.auroc_std:.3f}")
 
     top_heads = analyse_weights(
@@ -526,6 +544,16 @@ def main():
             "just the year cue.  Use this flag only for debugging."
         ),
     )
+    parser.add_argument(
+        "--b5", action="store_true",
+        help=(
+            "Use B5 (multi-span context: evidence_old + evidence_new) instead "
+            "of B1 (single evidence_new) as the strong-context group.  B5 "
+            "forces the model to read the year cue to disambiguate, making it "
+            "the correct testbed for the F1 (Time Not Set) diagnostic.  Requires "
+            "the JSONL file to contain B5 instances (build with --layers B1 B3 B5)."
+        ),
+    )
     args = parser.parse_args()
 
     dtype_map = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
@@ -548,11 +576,12 @@ def main():
     print(f"Output:   {out_dir}")
 
     # load data
-    b1_instances, b3_instances = load_instances(args.data)
+    b1_instances, b3_instances = load_instances(args.data, use_b5=args.b5)
     if args.max_instances:
         b1_instances = b1_instances[:args.max_instances]
         b3_instances = b3_instances[:args.max_instances]
-    print(f"\nLoaded {len(b1_instances)} B1 instances, {len(b3_instances)} B3 instances")
+    ctx_label = "B5 (multi-span)" if args.b5 else "B1"
+    print(f"\nLoaded {len(b1_instances)} {ctx_label} instances, {len(b3_instances)} B3 instances")
 
     # load model
     print(f"\nLoading model {args.model}  (this may take 1–3 min on first run)…")
