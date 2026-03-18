@@ -17,7 +17,8 @@ from pathlib import Path
 import torch
 
 # ── make sure source/ is on the path ─────────────────────────────────────────
-ROOT = Path(__file__).resolve().parents[2]
+# parents[0] = scripts/   parents[1] = project root (kc/)
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "source"))
 
 from tatm.model import _collect_eos_ids, _patch_phi3_rope_scaling, _needs_trust_remote_code
