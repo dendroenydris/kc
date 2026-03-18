@@ -248,8 +248,9 @@ def run_f1a(model, b1_instances, template, out_dir):
     if n_nonzero == 0:
         print("\n  WARNING: all coefficients are zero.")
         print("  Possible causes:")
-        print("    - Too few samples (need ≥ 20 of each class for C=1.0)")
+        print("    - Old code running (C not updated) — check [probe] line above")
         print("    - All attention features nearly identical across instances")
+        print("    → F1 (attention to year tokens) may genuinely not be the mechanism")
 
     # save — use scientific notation strings for coef so tiny values are visible
     probe_out = {

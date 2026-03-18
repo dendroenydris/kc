@@ -194,6 +194,13 @@ def train_probe(
     n_neg = len(y) - n_pos
     min_class = min(n_pos, n_neg)
 
+    # Diagnostic: confirm C value and feature statistics
+    feat_std = X.std(axis=0)
+    n_constant = int((feat_std < 1e-8).sum())
+    print(f"  [probe] C={C}  n={len(y)} ({n_pos}+/{n_neg}-)  "
+          f"feat_range=[{X.min():.3e}, {X.max():.3e}]  "
+          f"constant_feats={n_constant}/{X.shape[1]}")
+
     if min_class < 2:
         print(
             f"WARNING: only {n_pos} positive / {n_neg} negative samples. "
