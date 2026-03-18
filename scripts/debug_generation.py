@@ -57,10 +57,9 @@ def main() -> None:
 
     # ── 1. Load model ─────────────────────────────────────────────────────────
     section("1. Loading model")
-    import transformer_lens
-    print(f"  transformer_lens version : {transformer_lens.__version__}")
-    import transformers
-    print(f"  transformers version     : {transformers.__version__}")
+    from importlib.metadata import version as _ver
+    print(f"  transformer_lens version : {_ver('transformer-lens')}")
+    print(f"  transformers version     : {_ver('transformers')}")
     model = load_model_debug(args.model, args.device, dtype)
     tok = model.tokenizer
     print(f"  model.cfg.device  : {model.cfg.device}")
