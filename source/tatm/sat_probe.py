@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+import gc
+
 import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
@@ -88,8 +90,6 @@ def collect_features(
         desc="F1-a  generate+attn",
         unit="inst",
         dynamic_ncols=True,
-        # each instance runs 2 forward passes (generate + run_with_cache)
-        # show running success rate as postfix
     )
 
     for idx, inst in enumerate(bar):
@@ -106,16 +106,25 @@ def collect_features(
         year_pos = find_year_positions(token_ids_flat, model.tokenizer, target_year=t_new)
         all_year_pos = find_year_positions(token_ids_flat, model.tokenizer)
 
-        # attention features (max over year positions)
-        bar.set_postfix_str("attn cache…", refresh=False)
+        # generation first — frees its GPU tensors before the attention pass
+        bar.set_postfix_str("generating…", refresh=False)
+        generated = generate_answer(model, prompt, max_new_tokens=max_new_tokens)
+        success = check_match(generated, answer_new)
+
+        # clear any CUDA fragmentation left by the generation loop
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+        # attention features (max over year positions via run_with_hooks)
+        bar.set_postfix_str("attn hook…", refresh=False)
         attn_vec = extract_attention_to_positions(model, tokens, all_year_pos)
         features = attn_vec.numpy().flatten()
         assert features.shape[0] == feat_dim
 
-        # model generation → label
-        bar.set_postfix_str("generating…", refresh=False)
-        generated = generate_answer(model, prompt, max_new_tokens=max_new_tokens)
-        success = check_match(generated, answer_new)
+        # clear again after the attention forward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         X_list.append(features)
         y_list.append(int(success))

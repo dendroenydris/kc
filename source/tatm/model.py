@@ -401,13 +401,13 @@ def generate_answer(
             # prepend_bos=False: the prompt is already fully formatted
             logits = model(current_ids, prepend_bos=False)   # [1, seq, vocab]
             next_id = int(logits[0, -1, :].argmax())
+            del logits   # free GPU memory immediately; we only need next_id
             if next_id in eos_ids:
                 break
             generated.append(next_id)
-            current_ids = torch.cat(
-                [current_ids, torch.tensor([[next_id]], device=current_ids.device)],
-                dim=1,
-            )
+            next_tensor = torch.tensor([[next_id]], device=current_ids.device)
+            current_ids = torch.cat([current_ids, next_tensor], dim=1)
+            del next_tensor
 
     raw = tok.decode(generated, skip_special_tokens=True)
     return _clean_generated(raw)

@@ -30,6 +30,11 @@ def extract_attention_to_positions(
 ) -> torch.Tensor:
     """Extract attention weights from *src_positions* to *dest_position*.
 
+    Uses run_with_hooks (not run_with_cache) so that attention patterns are
+    extracted and immediately moved to CPU during the forward pass rather than
+    being accumulated in GPU VRAM.  This avoids OOM on large models (phi-3,
+    3.6 B params already occupy ~7 GB on a T4).
+
     Parameters
     ----------
     model : HookedTransformer
@@ -44,27 +49,34 @@ def extract_attention_to_positions(
     across all src_positions (following the SAT Probe convention of
     taking max over constraint tokens).
     """
+    n_layers = model.cfg.n_layers
+    n_heads  = model.cfg.n_heads
+
     if not src_positions:
-        n_layers = model.cfg.n_layers
-        n_heads = model.cfg.n_heads
         return torch.zeros(n_layers, n_heads)
 
-    filter_fn = lambda name: "hook_pattern" in name  # noqa: E731
-    with torch.no_grad():
-        _, cache = model.run_with_cache(tokens, names_filter=filter_fn)
-
-    n_layers = model.cfg.n_layers
-    n_heads = model.cfg.n_heads
-    seq_len = tokens.shape[-1]
-
+    seq_len  = tokens.shape[-1]
     dest_idx = dest_position if dest_position >= 0 else seq_len + dest_position
 
+    # Accumulate per-layer results on CPU; never keep the full pattern on GPU.
     result = torch.zeros(n_layers, n_heads)
-    for layer in range(n_layers):
-        # hook_pattern shape: [batch, n_heads, dest_seq, src_seq]
-        pattern = cache[f"blocks.{layer}.attn.hook_pattern"]
-        attn_to_srcs = pattern[0, :, dest_idx, src_positions]  # [H, n_srcs]
-        result[layer] = attn_to_srcs.max(dim=-1).values.float().cpu()
+
+    def make_hook(layer: int):
+        def _hook(pattern: torch.Tensor, hook) -> torch.Tensor:
+            # pattern: [batch, n_heads, seq_q, seq_k]
+            attn = pattern[0, :, dest_idx, src_positions]   # [H, n_srcs]
+            result[layer] = attn.max(dim=-1).values.float().cpu()
+            return pattern   # return unchanged so forward pass continues
+        return _hook
+
+    fwd_hooks = [
+        (f"blocks.{l}.attn.hook_pattern", make_hook(l))
+        for l in range(n_layers)
+    ]
+
+    torch.cuda.empty_cache()
+    with torch.no_grad():
+        model.run_with_hooks(tokens, fwd_hooks=fwd_hooks, prepend_bos=False)
 
     return result
 
@@ -121,8 +133,9 @@ def attention_knockout(
     dest_idx = seq_len - 1
 
     # clean forward pass
+    torch.cuda.empty_cache()
     with torch.no_grad():
-        logits_clean = model(tokens)[0, -1].float().cpu()
+        logits_clean = model(tokens, prepend_bos=False)[0, -1].float().cpu()
 
     # knockout forward pass
     hooks = [
@@ -133,7 +146,9 @@ def attention_knockout(
         for layer in knockout_layers
     ]
     with torch.no_grad():
-        logits_ko = model.run_with_hooks(tokens, fwd_hooks=hooks)[0, -1].float().cpu()
+        logits_ko = model.run_with_hooks(
+            tokens, fwd_hooks=hooks, prepend_bos=False
+        )[0, -1].float().cpu()
 
     delta = logits_ko - logits_clean
     result = {
