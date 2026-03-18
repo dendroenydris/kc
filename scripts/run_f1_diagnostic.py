@@ -91,20 +91,24 @@ def _load_layer2(
     records: list[dict],
     use_b5: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Layer-2 EvalInstance format: separate B1/B5 and B3 by instance_id prefix.
+    """Layer-2 EvalInstance format: load strong/weak context pairs.
 
-    Args:
-        use_b5: If True, load B5 (multi-span context) instead of B1 (single
-                evidence_new) as the strong-context group.  B5 shows both
-                evidence_old and evidence_new, forcing the model to read the
-                year in order to select the correct answer.  This is the
-                recommended context for the F1 (temporal attention) diagnostic.
+    Pairs:
+      B1 (strong, single-span) + B3 (weak, years stripped from B1)  — default
+      B5 (strong, multi-span)  + B6 (weak, years stripped from B5)  — --b5 flag
+
+    Using B5/B6 is the recommended setup for the F1 (temporal attention)
+    diagnostic because B5 shows both answer_old and answer_new in context,
+    forcing the model to rely on the year token to choose the correct answer.
+    B6 provides the year-free baseline for the same dual-span context.
     """
-    prefix = "B5" if use_b5 else "B1"
-    b1 = [r for r in records if r["instance_id"].startswith(prefix)]
-    b3 = [r for r in records if r["instance_id"].startswith("B3")]
+    strong_prefix = "B5" if use_b5 else "B1"
+    weak_prefix   = "B6" if use_b5 else "B3"
 
-    # align B3 to B1/B5 by fact_id + t_old + t_new
+    b1 = [r for r in records if r["instance_id"].startswith(strong_prefix)]
+    b3 = [r for r in records if r["instance_id"].startswith(weak_prefix)]
+
+    # align weak instances to strong by (fact_id, t_old, t_new)
     b3_map = {(r["fact_id"], r["t_old"], r["t_new"]): r for r in b3}
     b3_aligned = [
         b3_map.get((r["fact_id"], r["t_old"], r["t_new"]))

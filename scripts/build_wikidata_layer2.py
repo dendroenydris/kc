@@ -16,6 +16,8 @@ Instance types
   B4  year-stripped context + no time cue
   B5  multi-span context (evidence_old + evidence_new) + explicit question year
       → model must read year to select answer_new over answer_old
+  B6  multi-span weak — same as B5 but all years stripped ("recently")
+      → baseline: model without any year signal; paired with B5 like B3↔B1
   C1  adversarial context (old answer labelled current)
   C2  mislabelled-year context
   C3  plain no-cue, no context (pure baseline)
@@ -48,7 +50,7 @@ DEFAULT_LAYER1 = REPO_ROOT / "data/processed/wikidata_layer1.jsonl"
 DEFAULT_OUT    = REPO_ROOT / "data/processed/wikidata_layer2.jsonl"
 
 
-ALL_LAYERS = ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "C1", "C2", "C3"]
+ALL_LAYERS = ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3"]
 
 
 def main() -> None:

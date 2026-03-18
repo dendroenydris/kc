@@ -428,10 +428,14 @@ def build_eval_instances(tl: FactTimeline) -> list[EvalInstance]:
         _inst("B2", q_implicit, ctx_b_strong, "strong", True,  f"As of {t_new}", "context_override", "use_context"),
         _inst("B3", q_explicit, ctx_b_weak,   "weak",   False, "recently",       "context_override", "use_context"),
         _inst("B4", q_plain,    ctx_b_weak,   "weak",   False, "",               "context_override", "use_context"),
-        # B5: multi-span context — both t_old and t_new evidence shown.
+        # B5: multi-span strong — both t_old and t_new evidence shown with years.
         # Model must use the year to select answer_new over answer_old.
         # This is the correct testbed for F1 (temporal attention) diagnosis.
-        _inst("B5", q_explicit, ctx_b_multi,  "multi",  True,  f"As of {t_new}", "context_override", "use_context"),
+        _inst("B5", q_explicit, ctx_b_multi,              "multi",      True,  f"As of {t_new}", "context_override", "use_context"),
+        # B6: multi-span weak — same dual-span context but all years stripped.
+        # Paired with B5 exactly as B3 is paired with B1.  If the model
+        # succeeds on B6 it cannot have used the year token at all.
+        _inst("B6", q_explicit, _strip_years(ctx_b_multi), "multi_weak", False, "recently",       "context_override", "use_context"),
 
         # ── C: Mechanistic Probes ────────────────────────────────────────────
         _inst("C1", q_explicit, ctx_adv,  "strong", True,  f"As of {t_new}", "ablation", "use_memory"),
