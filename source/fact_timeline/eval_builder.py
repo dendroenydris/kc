@@ -202,9 +202,17 @@ def _pick_change_pair(tl: FactTimeline) -> Optional[tuple[int, int]]:
 
     Scoring: prefer the pair with the longest stable run before the change
     (makes parametric memory anchor strong) and a gap ≥ 1 year.
+
+    Key rule: t_new must be a *stable* year — one where answer_new is the
+    sole occupant of the fact.  Transition years (e.g. US 2021 where both
+    Trump and Biden appear) are ambiguous and skipped for t_new.
     """
     year_to_obj: dict[int, str] = {
         s.year: s.objects[0] for s in tl.states if s.objects
+    }
+    # Mark years as stable (exactly one answer) vs ambiguous (transition)
+    year_is_stable: dict[int, bool] = {
+        s.year: (len(s.objects) == 1) for s in tl.states if s.objects
     }
     sorted_years = sorted(year_to_obj)
     if len(sorted_years) < 2:
@@ -213,10 +221,39 @@ def _pick_change_pair(tl: FactTimeline) -> Optional[tuple[int, int]]:
     best_pair: Optional[tuple[int, int]] = None
     best_score = -1
 
+    # Build a lookup: year → set of objects (for multi-object transition years)
+    year_to_obj_set: dict[int, set[str]] = {
+        s.year: set(s.objects) for s in tl.states if s.objects
+    }
+
     for change_year in tl.change_years:
         if change_year not in year_to_obj:
             continue
-        t_new     = change_year
+
+        # Determine the *incoming* new object:
+        # the object that appears in change_year but was absent the year before.
+        prev_years = [y for y in sorted_years if y < change_year]
+        prev_obj_set = year_to_obj_set.get(prev_years[-1], set()) if prev_years else set()
+        new_objects = [
+            obj for obj in (year_to_obj_set.get(change_year) or set())
+            if obj not in prev_obj_set
+        ]
+        # Fallback: if nothing looks "new" just take objects[0]
+        change_obj = new_objects[0] if new_objects else year_to_obj[change_year]
+
+        # Find the first stable year >= change_year where the new object is
+        # the sole holder.  Prefer stable over the raw transition year.
+        stable_new_cands = [
+            y for y in sorted_years
+            if y >= change_year
+            and year_to_obj[y] == change_obj
+            and year_is_stable.get(y, False)
+        ]
+        if not stable_new_cands:
+            # No stable year found — fall back to the transition year itself.
+            stable_new_cands = [change_year]
+
+        t_new     = stable_new_cands[0]
         t_new_obj = year_to_obj[t_new]
 
         old_cands = [y for y in sorted_years if y < t_new and year_to_obj[y] != t_new_obj]
