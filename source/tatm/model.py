@@ -14,29 +14,59 @@ YEAR_PAT = re.compile(r"\b(19|20)\d{2}\b")
 # ── Phi-3 compatibility patch ────────────────────────────────────────────────
 
 def _patch_phi3_rope_scaling() -> None:
-    """Fix rope_scaling key mismatch in cached Phi-3 modeling files.
+    """Fix two bugs in cached Phi-3 modeling files (old cached version).
 
-    Newer Phi-3 configs use `rope_scaling["rope_type"]` but older cached
-    copies of modeling_phi3.py still access `rope_scaling["type"]`, causing
-    a KeyError.  This patches any cached copy we find before loading.
+    Bug 1 – KeyError 'type':
+        Old code: rope_scaling["type"]
+        New config uses "rope_type" → we try both keys.
+
+    Bug 2 – ValueError 'Unknown RoPE scaling type longrope/su/…':
+        Old code only handles "linear" / "dynamic".
+        For any unknown type (longrope, su, …) we fall back to standard
+        Phi3RotaryEmbedding, which is correct for the 4K context window and
+        causes no harm for mechanistic interpretability experiments.
     """
+    import importlib
+
     cache = Path.home() / ".cache" / "huggingface" / "modules" / "transformers_modules"
-    old = 'scaling_type = self.config.rope_scaling["type"]'
-    new = (
-        'scaling_type = (self.config.rope_scaling.get("type") '
-        'or self.config.rope_scaling.get("rope_type") '
-        'or "longrope")'
-    )
-    patched = False
-    for p in cache.glob("**/modeling_phi3.py"):
+    found = list(cache.glob("**/modeling_phi3.py"))
+    if not found:
+        return  # not cached yet — fresh download will have correct code
+
+    for p in found:
         text = p.read_text(encoding="utf-8")
-        if old in text:
-            p.write_text(text.replace(old, new), encoding="utf-8")
-            print(f"  [patch] fixed rope_scaling key in {p.parent.name[:32]}…")
-            patched = True
-    if not patched and cache.exists():
-        # file not cached yet — nothing to patch; new download will be correct
-        pass
+        changed = False
+
+        # ── Fix 1: key name lookup ─────────────────────────────────────────
+        old1 = 'scaling_type = self.config.rope_scaling["type"]'
+        new1 = (
+            'scaling_type = (self.config.rope_scaling.get("type") or '
+            'self.config.rope_scaling.get("rope_type") or "unknown")'
+        )
+        if old1 in text:
+            text = text.replace(old1, new1)
+            changed = True
+
+        # ── Fix 2: unknown type → fall back to standard RoPE ─────────────
+        old2 = 'raise ValueError(f"Unknown RoPE scaling type {scaling_type}")'
+        new2 = (
+            "# patched: fall back to standard RoPE for extended scaling types\n"
+            "            self.rotary_emb = Phi3RotaryEmbedding(\n"
+            "                self.head_dim,\n"
+            "                max_position_embeddings=self.max_position_embeddings,\n"
+            "                base=self.rope_theta,\n"
+            "            )"
+        )
+        if old2 in text:
+            text = text.replace(old2, new2)
+            changed = True
+
+        if changed:
+            p.write_text(text, encoding="utf-8")
+            print(f"  [patch] modeling_phi3.py → {p.parent.name[:40]}…")
+
+    # invalidate importlib cache so the patched file is re-read
+    importlib.invalidate_caches()
 
 
 # ── Model loading ────────────────────────────────────────────────────────────
