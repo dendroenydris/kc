@@ -346,29 +346,35 @@ def generate_answer(
 ) -> str:
     """Greedy-decode a short answer from *prompt*.
 
-    Uses the HF tokenizer directly (not to_tokens) so that Phi-3 chat
-    special tokens like <|end|> are encoded as single token IDs rather than
-    split into character sequences.  Passes all model-specific EOS token IDs
-    to TL's generate so decoding stops correctly.
+    We bypass TL's model.generate() entirely because TL may prepend a BOS
+    token to an already-formatted tensor, corrupting the sequence and causing
+    degenerate repetition (e.g. "Has Has Has…").
+
+    Instead we run a manual token-by-token loop:
+      1. Encode the full prompt with the HF tokenizer (handles Phi-3 special
+         tokens like <|end|> correctly).
+      2. Call model(ids, prepend_bos=False) to get logits for each step.
+      3. Argmax → append → repeat until EOS or max_new_tokens.
     """
     tok = model.tokenizer
-
-    # Encode with the HF tokenizer to handle chat special tokens correctly
     enc = tok(prompt, return_tensors="pt", add_special_tokens=False)
-    input_ids = enc["input_ids"].to(next(model.parameters()).device)
+    current_ids = enc["input_ids"].to(model.cfg.device)
 
-    eos_ids = _collect_eos_ids(tok)
+    eos_ids = set(_collect_eos_ids(tok))
+    generated: list[int] = []
 
     with torch.no_grad():
-        output_ids = model.generate(
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            stop_at_eos=True,
-            eos_token_id=eos_ids if eos_ids else None,
-            do_sample=False,   # greedy; temperature=0.0 is NOT a TL parameter
-            verbose=False,
-        )
+        for _ in range(max_new_tokens):
+            # prepend_bos=False: the prompt is already fully formatted
+            logits = model(current_ids, prepend_bos=False)   # [1, seq, vocab]
+            next_id = int(logits[0, -1, :].argmax())
+            if next_id in eos_ids:
+                break
+            generated.append(next_id)
+            current_ids = torch.cat(
+                [current_ids, torch.tensor([[next_id]], device=current_ids.device)],
+                dim=1,
+            )
 
-    new_ids = output_ids[0, input_ids.shape[1]:]
-    raw = tok.decode(new_ids, skip_special_tokens=True)
+    raw = tok.decode(generated, skip_special_tokens=True)
     return _clean_generated(raw)
