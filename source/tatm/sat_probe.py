@@ -166,7 +166,7 @@ def train_probe(
     X: np.ndarray,
     y: np.ndarray,
     *,
-    C: float = 1.0,
+    C: float = 10.0,
     n_folds: int = 5,
 ) -> ProbeResult:
     """Train L1-regularised logistic regression with stratified CV.
@@ -175,13 +175,15 @@ def train_probe(
     ----------
     X : [N, L*H]
     y : [N] binary labels
-    C : inverse regularisation strength.  Default 1.0.
-        The original SAT Probe paper (Yuksekgonul et al.) used C=0.05 on
-        datasets with hundreds of instances.  With small datasets (~30-100
-        samples) the gradient signal per feature is ~0.25, so the L1
-        threshold 1/C must be < 0.25 for any coefficient to survive, i.e.
-        C > 4.  C=1.0 is a practical default: sparse enough to highlight
-        only the most predictive heads, weak enough to avoid total collapse.
+    C : inverse regularisation strength.
+        With standardized features and n samples (n_pos pos / n_neg neg),
+        the maximum gradient at w=0 is bounded by ~0.45 regardless of
+        feature values (derived from the 27/11 split in our dataset).
+        For any coefficient to survive L1, we need 1/C < 0.45, i.e. C > 2.2.
+        C=10.0 gives 1/C=0.1, well below the threshold, so genuine signal
+        can emerge while L1 still kills pure noise features.
+        (The SAT Probe paper used C=0.05 on datasets with >500 instances
+        where gradients are proportionally larger.)
     n_folds : number of CV folds
 
     Returns
