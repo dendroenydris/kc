@@ -150,20 +150,23 @@ def load_model(
     if _needs_trust_remote_code(model_name):
         extra_kwargs["trust_remote_code"] = True
 
-    # Disable TL weight post-processing for reduced-precision dtypes.
-    # TL's default fold_ln / center_writing_weights can be numerically
-    # unstable in float16 and produce garbage outputs (TL's own warning).
-    if dtype == torch.float16:
-        extra_kwargs.update(
-            fold_ln=False,
-            center_writing_weights=False,
-            center_unembed=False,
-        )
+    # TL's default weight post-processing (fold_ln, centering) is numerically
+    # unstable in float16 and produces garbage outputs for models like Phi-3.
+    # The official TL recommendation is to use from_pretrained_no_processing,
+    # which sets all five processing flags to False.
+    no_proc_kwargs: dict = dict(
+        fold_ln=False,
+        center_writing_weights=False,
+        center_unembed=False,
+        fold_value_biases=False,
+        refactor_factored_attn_matrices=False,
+    )
 
     model = HookedTransformer.from_pretrained(
         model_name,
         device=device,
         dtype=dtype,
+        **no_proc_kwargs,
         **extra_kwargs,
     )
     model.eval()
@@ -219,6 +222,21 @@ _TEMPLATES: dict[str, dict[str, str]] = {
             "Give a short, direct answer.<|end|>\n"
             "<|user|>\nQuestion: {question}<|end|>\n"
             "<|assistant|>\n"
+        ),
+    },
+    # Qwen2 / Qwen2.5 / Qwen3 chat template  (<|im_start|> ... <|im_end|>)
+    "qwen": {
+        "with_ctx": (
+            "<|im_start|>system\nAnswer the question based on the provided context. "
+            "Give a short, direct answer.<|im_end|>\n"
+            "<|im_start|>user\nContext: {context}\n\nQuestion: {question}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        ),
+        "no_ctx": (
+            "<|im_start|>system\nAnswer the question. "
+            "Give a short, direct answer.<|im_end|>\n"
+            "<|im_start|>user\nQuestion: {question}<|im_end|>\n"
+            "<|im_start|>assistant\n"
         ),
     },
 }

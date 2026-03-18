@@ -57,6 +57,10 @@ def main() -> None:
 
     # ── 1. Load model ─────────────────────────────────────────────────────────
     section("1. Loading model")
+    import transformer_lens
+    print(f"  transformer_lens version : {transformer_lens.__version__}")
+    import transformers
+    print(f"  transformers version     : {transformers.__version__}")
     model = load_model_debug(args.model, args.device, dtype)
     tok = model.tokenizer
     print(f"  model.cfg.device  : {model.cfg.device}")
@@ -77,13 +81,37 @@ def main() -> None:
 
     # ── 3. Prompt encoding ────────────────────────────────────────────────────
     section("3. Prompt encoding")
-    # Plain format works for phi-2 and most base/instruct models
-    PROMPT = (
-        "Context: Joe Biden became the 46th President of the United States "
-        "on January 20, 2021, succeeding Donald Trump.\n\n"
-        "Question: As of 2021, who is the President of the United States?\n"
-        "Answer:"
-    )
+    # Detect model family and use the right prompt format
+    name_lower = args.model.lower()
+    if "qwen" in name_lower:
+        PROMPT = (
+            "<|im_start|>system\nAnswer questions based on context. "
+            "Give a short, direct answer.<|im_end|>\n"
+            "<|im_start|>user\n"
+            "Context: Joe Biden became the 46th President of the United States "
+            "on January 20, 2021, succeeding Donald Trump.\n\n"
+            "Question: As of 2021, who is the President of the United States?<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+    elif "phi-3" in name_lower or "phi3" in name_lower:
+        # Phi-3 instruct chat format  (<|user|> ... <|end|> \n <|assistant|>)
+        PROMPT = (
+            "<|system|>\nAnswer the question based on the provided context. "
+            "Give a short, direct answer.<|end|>\n"
+            "<|user|>\n"
+            "Context: Joe Biden became the 46th President of the United States "
+            "on January 20, 2021, succeeding Donald Trump.\n\n"
+            "Question: As of 2021, who is the President of the United States?<|end|>\n"
+            "<|assistant|>\n"
+        )
+    else:
+        # Plain completion format — works for phi-2 and base models
+        PROMPT = (
+            "Context: Joe Biden became the 46th President of the United States "
+            "on January 20, 2021, succeeding Donald Trump.\n\n"
+            "Question: As of 2021, who is the President of the United States?\n"
+            "Answer:"
+        )
     print("  Raw prompt:")
     print(PROMPT)
 
