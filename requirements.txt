@@ -9,7 +9,7 @@ mwparserfromhell>=0.6.6
 
 # Core ML
 torch>=2.1.0
-transformers==4.47.1          # pinned: TL 2.x weight conversion breaks on transformers>=5.0
+transformers>=4.51,<5.0       # TL 2.x phi-3 weight conversion breaks on transformers 5.x
 accelerate>=0.26.0          # required by transformers for device_map / MPS offload
 huggingface-hub>=0.20.0     # model downloads
 
