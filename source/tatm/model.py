@@ -255,6 +255,9 @@ def build_prompt(
 
 # ── Year-token identification ────────────────────────────────────────────────
 
+_YEAR_EXACT = re.compile(r"^(19|20)\d{2}$")
+
+
 def find_year_positions(
     token_ids: torch.Tensor,
     tokenizer,
@@ -267,6 +270,10 @@ def find_year_positions(
     - SentencePiece (▁ prefix, used by Phi-3 / LLaMA-2)
     - BPE with Ġ prefix (GPT-2 / RoBERTa style)
     - Plain decode (LLaMA-3 tiktoken style)
+
+    SentencePiece tokenizers (e.g. Phi-3) split "2021" into up to 5 tokens:
+    ▁(space), 2, 0, 2, 1.  We use a sliding-window decode over windows of
+    1–6 consecutive tokens to catch this case reliably.
 
     Parameters
     ----------
@@ -281,9 +288,7 @@ def find_year_positions(
     ids = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else token_ids
     positions: set[int] = set()
 
-    # ── Primary: raw subword strings, strip word-start markers ────────────────
-    # convert_ids_to_tokens returns e.g. "▁2021" or "Ġ2021"; decode() does
-    # post-processing that can obscure the bare digits for some tokenizers.
+    # ── Pass 1: raw subword strings (handles "▁2021" as a single token) ───────
     try:
         raw_tokens = tokenizer.convert_ids_to_tokens(ids)
     except Exception:
@@ -295,31 +300,25 @@ def find_year_positions(
                 continue
             # strip SentencePiece (▁ U+2581) and GPT-2 BPE (Ġ U+0120) prefixes
             clean = raw.lstrip("\u2581\u0120").strip()
-            if YEAR_PAT.fullmatch(clean):
+            if _YEAR_EXACT.match(clean):
                 if target_year is None or int(clean) == target_year:
                     positions.add(i)
 
-    # ── Fallback: decode each token individually ───────────────────────────────
-    decoded = [tokenizer.decode([tid]) for tid in ids]
-
-    if not positions:
-        for i, tok_str in enumerate(decoded):
-            clean = tok_str.strip()
-            if YEAR_PAT.fullmatch(clean):
-                if target_year is None or int(clean) == target_year:
-                    positions.add(i)
-
-    # ── Multi-token fallback: years split across two adjacent tokens ───────────
-    # e.g.  "▁20" + "21"  →  "2021"
-    for i in range(len(decoded) - 1):
-        if i in positions or (i + 1) in positions:
-            continue
-        combined = (decoded[i] + decoded[i + 1]).strip()
-        m = YEAR_PAT.search(combined)
-        if m:
-            year_val = int(m.group())
-            if target_year is None or year_val == target_year:
-                positions.update([i, i + 1])
+    # ── Pass 2: sliding window over 1-6 consecutive tokens ────────────────────
+    # Phi-3 splits "2021" as: ▁(id=29871, decoded='') + '2' + '0' + '2' + '1'
+    # so we need windows up to length 6 (space marker + 5 digit tokens for a
+    # year like "20xx" or "19xx").
+    for window in range(1, 7):
+        for i in range(len(ids) - window + 1):
+            # skip if all positions in this window are already known year tokens
+            window_set = set(range(i, i + window))
+            if window_set <= positions:
+                continue
+            combined = tokenizer.decode(ids[i : i + window]).strip()
+            if _YEAR_EXACT.match(combined):
+                year_val = int(combined)
+                if target_year is None or year_val == target_year:
+                    positions.update(window_set)
 
     return sorted(positions)
 
