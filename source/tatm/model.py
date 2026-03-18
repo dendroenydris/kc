@@ -309,19 +309,66 @@ def check_match(generated: str, expected: str) -> bool:
     return bool(first_word and first_word in gen_lower)
 
 
+def _collect_eos_ids(tokenizer) -> list[int]:
+    """Return all token IDs that should stop generation for this model."""
+    eos: list[int] = []
+    if tokenizer.eos_token_id is not None:
+        eos.append(tokenizer.eos_token_id)
+    for marker in ("<|end|>", "<|endoftext|>", "<|eot_id|>", "<|im_end|>"):
+        vocab = tokenizer.get_vocab()
+        if marker in vocab:
+            tid = vocab[marker]
+            if tid not in eos:
+                eos.append(tid)
+    return eos
+
+
+def _clean_generated(text: str) -> str:
+    """Extract the first clean answer phrase from raw model output."""
+    text = text.strip()
+    # If model echoed the "Answer:" prefix, extract what follows
+    m = re.search(r"(?i)Answer\s*:\s*([^\n\r]+)", text)
+    if m:
+        text = m.group(1)
+    else:
+        text = text.split("\n")[0]
+    # Truncate at special-token remnants, sentence boundary, or prompt echoes
+    for stop in ("<|", "[", "Instruction"):
+        text = text.split(stop)[0]
+    text = text.split(".")[0]
+    return text.strip()
+
+
 def generate_answer(
     model: HookedTransformer,
     prompt: str,
     max_new_tokens: int = 32,
 ) -> str:
-    """Greedy-decode a short answer from *prompt*."""
-    input_ids = model.to_tokens(prompt, prepend_bos=False)
+    """Greedy-decode a short answer from *prompt*.
+
+    Uses the HF tokenizer directly (not to_tokens) so that Phi-3 chat
+    special tokens like <|end|> are encoded as single token IDs rather than
+    split into character sequences.  Passes all model-specific EOS token IDs
+    to TL's generate so decoding stops correctly.
+    """
+    tok = model.tokenizer
+
+    # Encode with the HF tokenizer to handle chat special tokens correctly
+    enc = tok(prompt, return_tensors="pt", add_special_tokens=False)
+    input_ids = enc["input_ids"].to(next(model.parameters()).device)
+
+    eos_ids = _collect_eos_ids(tok)
+
     with torch.no_grad():
         output_ids = model.generate(
             input_ids,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
+            stop_at_eos=True,
+            eos_token_id=eos_ids if eos_ids else None,
+            do_sample=False,   # greedy; temperature=0.0 is NOT a TL parameter
             verbose=False,
         )
+
     new_ids = output_ids[0, input_ids.shape[1]:]
-    return model.tokenizer.decode(new_ids, skip_special_tokens=True)
+    raw = tok.decode(new_ids, skip_special_tokens=True)
+    return _clean_generated(raw)
