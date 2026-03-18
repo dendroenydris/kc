@@ -23,8 +23,9 @@ def _patch_phi3_rope_scaling() -> None:
     Bug 2 – ValueError 'Unknown RoPE scaling type longrope/su/…':
         Old code only handles "linear" / "dynamic".
         For any unknown type (longrope, su, …) we fall back to standard
-        Phi3RotaryEmbedding, which is correct for the 4K context window and
-        causes no harm for mechanistic interpretability experiments.
+        Phi3RotaryEmbedding.  We use a regex to capture the *actual*
+        indentation of the raise line so the replacement is always
+        syntactically valid regardless of how many spaces the file uses.
     """
     import importlib
 
@@ -48,17 +49,26 @@ def _patch_phi3_rope_scaling() -> None:
             changed = True
 
         # ── Fix 2: unknown type → fall back to standard RoPE ─────────────
-        old2 = 'raise ValueError(f"Unknown RoPE scaling type {scaling_type}")'
-        new2 = (
-            "# patched: fall back to standard RoPE for extended scaling types\n"
-            "            self.rotary_emb = Phi3RotaryEmbedding(\n"
-            "                self.head_dim,\n"
-            "                max_position_embeddings=self.max_position_embeddings,\n"
-            "                base=self.rope_theta,\n"
-            "            )"
+        # Use a regex so we capture the exact leading whitespace of the
+        # raise line and mirror it in the replacement body (avoids hardcoding
+        # 12 vs 16 vs any other indentation level).
+        raise_pat = re.compile(
+            r'^( *)raise ValueError\(f"Unknown RoPE scaling type \{scaling_type\}"\)',
+            re.MULTILINE,
         )
-        if old2 in text:
-            text = text.replace(old2, new2)
+        if raise_pat.search(text):
+            def _replace_raise(m: re.Match) -> str:
+                ind = m.group(1)           # exact indentation of the raise line
+                sub = ind + "    "         # one extra level for arguments
+                return (
+                    f"{ind}# patched: fall back to standard RoPE for unknown types\n"
+                    f"{ind}self.rotary_emb = Phi3RotaryEmbedding(\n"
+                    f"{sub}self.head_dim,\n"
+                    f"{sub}max_position_embeddings=self.max_position_embeddings,\n"
+                    f"{sub}base=self.rope_theta,\n"
+                    f"{ind})"
+                )
+            text = raise_pat.sub(_replace_raise, text)
             changed = True
 
         if changed:
