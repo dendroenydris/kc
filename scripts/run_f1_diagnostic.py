@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 # Ensure source/ is on PYTHONPATH
 _root = Path(__file__).resolve().parent.parent
@@ -188,14 +189,13 @@ def run_f1b(model, b1_instances, b3_instances, y_labels, top_heads, template, ou
 
     groups = {"b1_success": [], "b1_failure": [], "b3": []}
 
-    for idx, inst in enumerate(b1_instances):
+    for idx, inst in enumerate(tqdm(b1_instances, desc="F1-b  B1 attn", unit="inst", dynamic_ncols=True)):
         context = inst.get("evidence_new", inst.get("context", ""))
         question = inst.get("question", "")
         t_new = inst.get("t_new")
 
         prompt = build_prompt(context, question, template=template)
         tokens = model.to_tokens(prompt, prepend_bos=False)
-        year_pos = find_year_positions(tokens[0], model.tokenizer, target_year=t_new)
         all_year_pos = find_year_positions(tokens[0], model.tokenizer)
 
         attn = extract_attention_to_positions(model, tokens, all_year_pos)
@@ -204,14 +204,13 @@ def run_f1b(model, b1_instances, b3_instances, y_labels, top_heads, template, ou
         key = "b1_success" if label == 1 else "b1_failure"
         groups[key].append(attn.numpy())
 
-    for inst in b3_instances:
+    for inst in tqdm(b3_instances, desc="F1-b  B3 attn", unit="inst", dynamic_ncols=True):
         context = inst.get("evidence_new", inst.get("context", ""))
         question = inst.get("question", "")
         t_new = inst.get("t_new")
 
         prompt = build_prompt(context, question, template=template)
         tokens = model.to_tokens(prompt, prepend_bos=False)
-        # B3 has years stripped — find remaining year positions (mostly from question)
         all_year_pos = find_year_positions(tokens[0], model.tokenizer)
         attn = extract_attention_to_positions(model, tokens, all_year_pos)
         groups["b3"].append(attn.numpy())
@@ -291,7 +290,13 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
     print(f"Knockout layer window: {ko_layers[0]}–{ko_layers[-1]}")
 
     ko_results = []
-    for idx in success_indices:
+    ko_bar = tqdm(
+        success_indices,
+        desc="F1-c  knockout",
+        unit="inst",
+        dynamic_ncols=True,
+    )
+    for idx in ko_bar:
         inst = b1_instances[idx]
         context = inst.get("evidence_new", inst.get("context", ""))
         question = inst.get("question", "")
@@ -304,6 +309,7 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
         year_pos = find_year_positions(tokens[0], model.tokenizer)
 
         if not year_pos:
+            ko_bar.set_postfix_str("skip (no year toks)", refresh=True)
             continue
 
         # get first-token IDs for answer_new and answer_old
@@ -346,6 +352,12 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
             entry["p_old_gain"] = p_ko - p_clean
 
         ko_results.append(entry)
+        drop_pct = entry.get("p_new_drop_relative", float("nan"))
+        ko_bar.set_postfix(
+            year_toks=len(year_pos),
+            drop=f"{drop_pct:+.2f}" if drop_pct == drop_pct else "n/a",
+            refresh=True,
+        )
 
     if ko_results:
         drops = [r["p_new_drop_relative"] for r in ko_results if "p_new_drop_relative" in r]
@@ -419,9 +431,13 @@ def main():
     print(f"\nLoaded {len(b1_instances)} B1 instances, {len(b3_instances)} B3 instances")
 
     # load model
-    print(f"\nLoading model {args.model}...")
-    model = load_model(args.model, device=args.device, dtype=resolved_dtype)
-    print(f"  {model.cfg.n_layers} layers, {model.cfg.n_heads} heads, "
+    print(f"\nLoading model {args.model}  (this may take 1–3 min on first run)…")
+    with tqdm(total=1, desc="Loading weights", unit="model",
+              bar_format="{desc}: {elapsed} elapsed {postfix}") as pbar:
+        model = load_model(args.model, device=args.device, dtype=resolved_dtype)
+        pbar.set_postfix_str("done")
+        pbar.update(1)
+    print(f"  {model.cfg.n_layers} layers × {model.cfg.n_heads} heads  "
           f"d_model={model.cfg.d_model}")
 
     # F1-a

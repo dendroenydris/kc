@@ -26,6 +26,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
+from tqdm import tqdm
 from transformer_lens import HookedTransformer
 
 from tatm.hooks import extract_attention_to_positions
@@ -82,7 +83,16 @@ def collect_features(
     y_list: list[int] = []
     meta: list[dict] = []
 
-    for idx, inst in enumerate(instances):
+    bar = tqdm(
+        instances,
+        desc="F1-a  generate+attn",
+        unit="inst",
+        dynamic_ncols=True,
+        # each instance runs 2 forward passes (generate + run_with_cache)
+        # show running success rate as postfix
+    )
+
+    for idx, inst in enumerate(bar):
         context = inst.get("evidence_new", inst.get("context", ""))
         question = inst.get("question", "")
         answer_new = inst.get("answer_new", "")
@@ -92,15 +102,18 @@ def collect_features(
         tokens = model.to_tokens(prompt, prepend_bos=False)
         token_ids_flat = tokens[0]
 
+        bar.set_postfix_str("tokenising…", refresh=False)
         year_pos = find_year_positions(token_ids_flat, model.tokenizer, target_year=t_new)
         all_year_pos = find_year_positions(token_ids_flat, model.tokenizer)
 
         # attention features (max over year positions)
+        bar.set_postfix_str("attn cache…", refresh=False)
         attn_vec = extract_attention_to_positions(model, tokens, all_year_pos)
         features = attn_vec.numpy().flatten()
         assert features.shape[0] == feat_dim
 
         # model generation → label
+        bar.set_postfix_str("generating…", refresh=False)
         generated = generate_answer(model, prompt, max_new_tokens=max_new_tokens)
         success = check_match(generated, answer_new)
 
@@ -117,14 +130,14 @@ def collect_features(
             "n_target_year_tokens": len(year_pos),
         })
 
-        if verbose and (idx + 1) % 10 == 0:
-            pos_so_far = sum(y_list)
-            print(
-                f"  [{idx+1}/{len(instances)}] "
-                f"success rate: {pos_so_far}/{idx+1} "
-                f"({100*pos_so_far/(idx+1):.1f}%)"
-            )
+        n_ok = sum(y_list)
+        bar.set_postfix(
+            success=f"{n_ok}/{idx+1}",
+            year_toks=len(all_year_pos),
+            refresh=True,
+        )
 
+    bar.close()
     return np.stack(X_list), np.array(y_list), meta
 
 
