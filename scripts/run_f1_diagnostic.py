@@ -158,6 +158,8 @@ def run_a1_filter(
     b3_instances: list[dict],
     template: str,
     out_dir: Path,
+    strong_label: str = "B1",
+    weak_label: str = "B3",
 ) -> tuple[list[dict], list[dict]]:
     """Run A1 (explicit year, no context) to keep only instances the model
     cannot answer from parametric memory alone.
@@ -174,7 +176,7 @@ def run_a1_filter(
     print("=" * 60)
     print("Prompt: question WITH year, WITHOUT context")
     print("Keeping instances where model does NOT output answer_new")
-    print("(i.e., evidence passage is genuinely needed for B1 to succeed)\n")
+    print(f"(i.e., evidence passage is genuinely needed for {strong_label} to succeed)\n")
 
     knows_new_ids: set[str] = set()
     a1_log = []
@@ -235,7 +237,7 @@ def run_a1_filter(
         if (r.get("fact_id"), r.get("t_old"), r.get("t_new")) not in excluded_keys
     ]
 
-    print(f"\n→ {len(b1_filtered)} B1 + {len(b3_filtered)} B3 instances kept for F1 diagnosis")
+    print(f"\n→ {len(b1_filtered)} {strong_label} + {len(b3_filtered)} {weak_label} instances kept for F1 diagnosis")
     return b1_filtered, b3_filtered
 
 
@@ -410,16 +412,20 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
         print("No B1-success instances to run knockout on.")
         return {}
 
-    # determine knockout layer window from top heads
-    if top_heads:
-        head_layers = sorted(set(l for l, h, _ in top_heads[:5]))
-        min_l, max_l = head_layers[0], head_layers[-1]
-        window = 2
-        ko_layers = list(range(max(0, min_l - window), min(model.cfg.n_layers, max_l + window + 1)))
-    else:
-        ko_layers = list(range(model.cfg.n_layers))
+    # Always knockout ALL layers: we want to test whether year-token attention
+    # is causally necessary anywhere in the network, not just near the probe
+    # heads.  (Previous probe-head-window logic was only knocking out L1–12,
+    # missing the deep layers L25–31 where year tokens actually receive
+    # significant attention per F1-b analysis.)
+    ko_layers_full = list(range(model.cfg.n_layers))
 
-    print(f"Knockout layer window: {ko_layers[0]}–{ko_layers[-1]}")
+    # Also prepare a deep-only window (top 25% of layers) for comparison.
+    n = model.cfg.n_layers
+    ko_layers_deep = list(range(n * 3 // 4, n))   # e.g. L24–31 for 32-layer model
+
+    print(f"Knockout layer window (full):  0–{ko_layers_full[-1]}")
+    print(f"Knockout layer window (deep):  {ko_layers_deep[0]}–{ko_layers_deep[-1]}")
+    ko_layers = ko_layers_full   # use full range as default
 
     ko_results = []
     ko_bar = tqdm(
@@ -496,21 +502,81 @@ def run_f1c(model, b1_instances, y_labels, top_heads, template, out_dir):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _print_drops(label: str, results: list[dict]) -> dict:
+        drops = [r["p_new_drop_relative"] for r in results if "p_new_drop_relative" in r]
+        if not drops:
+            return {}
+        mean_drop   = float(np.mean(drops))
+        median_drop = float(np.median(drops))
+        pct_10      = sum(1 for d in drops if d > 0.10) / len(drops)
+        print(f"\n  [{label}]  n={len(drops)}")
+        print(f"    Mean   p(answer_new) drop: {mean_drop:+.4f}")
+        print(f"    Median p(answer_new) drop: {median_drop:+.4f}")
+        print(f"    Fraction >10% drop:        {pct_10:.2%}")
+        return {"mean_drop": mean_drop, "median_drop": median_drop, "pct_above_10": pct_10}
+
     if ko_results:
-        drops = [r["p_new_drop_relative"] for r in ko_results if "p_new_drop_relative" in r]
-        if drops:
-            mean_drop = np.mean(drops)
-            median_drop = np.median(drops)
-            pct_above_10 = sum(1 for d in drops if d > 0.10) / len(drops)
-            print(f"\nResults over {len(drops)} B1-success instances:")
-            print(f"  Mean relative p(answer_new) drop:   {mean_drop:.4f}")
-            print(f"  Median relative p(answer_new) drop: {median_drop:.4f}")
-            print(f"  Fraction with >10% drop:            {pct_above_10:.2%}")
+        print(f"\nResults over {len(ko_results)} B1-success instances:")
+        full_stats = _print_drops("full L0–L31 knockout", ko_results)
+
+    # ── Deep-layer knockout (last 25% of layers) for comparison ──────────────
+    # Re-run with ko_layers_deep to isolate whether year-token attention in
+    # deep layers (L24–31) is causally necessary.  These are the layers where
+    # F1-b shows year tokens receive the most attention (0.05–0.20).
+    print(f"\n  Running deep-layer knockout ({ko_layers_deep[0]}–{ko_layers_deep[-1]}) for comparison…")
+    ko_deep_results = []
+    for idx in success_indices:
+        inst = b1_instances[idx]
+        context  = inst.get("evidence_new", inst.get("context", ""))
+        question = inst.get("question", "")
+        answer_new = inst.get("answer_new", "")
+        answer_old = inst.get("answer_old", "")
+        t_new = inst.get("t_new")
+
+        prompt   = build_prompt(context, question, template=template)
+        tokens   = model.to_tokens(prompt, prepend_bos=False)
+        year_pos = find_year_positions(tokens[0], model.tokenizer, target_year=t_new)
+        if not year_pos:
+            year_pos = find_year_positions(tokens[0], model.tokenizer)
+        if not year_pos:
+            continue
+
+        new_tids = model.tokenizer.encode(f" {answer_new}", add_special_tokens=False)[:1]
+        old_tids = model.tokenizer.encode(f" {answer_old}", add_special_tokens=False)[:1]
+        track_tids = list(set(new_tids + old_tids))
+
+        ko = attention_knockout(
+            model, tokens, year_pos,
+            knockout_layers=ko_layers_deep,
+            answer_token_ids=track_tids,
+        )
+
+        new_tid = new_tids[0] if new_tids else None
+        entry_d: dict = {
+            "instance_id": inst.get("instance_id", f"inst_{idx}"),
+            "knockout_layers": f"{ko_layers_deep[0]}-{ko_layers_deep[-1]}",
+        }
+        if new_tid is not None and new_tid in ko["probs_clean"]:
+            p_clean = ko["probs_clean"][new_tid]
+            p_ko    = ko["probs_ko"][new_tid]
+            drop    = p_clean - p_ko
+            entry_d["p_new_drop_relative"] = drop / p_clean if p_clean > 0 else 0.0
+        ko_deep_results.append(entry_d)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if ko_deep_results:
+        deep_stats = _print_drops(f"deep L{ko_layers_deep[0]}–L{ko_layers_deep[-1]} only", ko_deep_results)
 
     summary = {
-        "knockout_layers": ko_layers,
+        "knockout_layers_full": ko_layers_full,
+        "knockout_layers_deep": ko_layers_deep,
         "n_instances": len(ko_results),
-        "per_instance": ko_results,
+        "full_stats": full_stats if ko_results else {},
+        "deep_stats": deep_stats if ko_deep_results else {},
+        "per_instance_full": ko_results,
+        "per_instance_deep": ko_deep_results,
     }
     with open(out_dir / "f1c_attention_knockout.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -584,8 +650,9 @@ def main():
     if args.max_instances:
         b1_instances = b1_instances[:args.max_instances]
         b3_instances = b3_instances[:args.max_instances]
-    ctx_label = "B5 (multi-span)" if args.b5 else "B1"
-    print(f"\nLoaded {len(b1_instances)} {ctx_label} instances, {len(b3_instances)} B3 instances")
+    strong_label = "B5" if args.b5 else "B1"
+    weak_label   = "B6" if args.b5 else "B3"
+    print(f"\nLoaded {len(b1_instances)} {strong_label} instances, {len(b3_instances)} {weak_label} instances")
 
     # load model
     print(f"\nLoading model {args.model}  (this may take 1–3 min on first run)…")
@@ -601,6 +668,7 @@ def main():
     if not args.no_a1_filter:
         b1_instances, b3_instances = run_a1_filter(
             model, b1_instances, b3_instances, args.template, out_dir,
+            strong_label=strong_label, weak_label=weak_label,
         )
         if not b1_instances:
             print("\nNo instances remain after A1 filter. Exiting.")

@@ -220,9 +220,11 @@ def train_probe(
     def _make_pipe() -> Pipeline:
         return Pipeline([
             ("scaler", StandardScaler()),
+            # liblinear: exact coordinate descent, robust on small datasets.
+            # saga can fail to converge with n<100; liblinear always converges.
             ("clf", LogisticRegression(
-                penalty="l1", C=C, solver="saga",
-                max_iter=2000, random_state=42,
+                penalty="l1", C=C, solver="liblinear",
+                max_iter=5000, random_state=42,
             )),
         ])
 
